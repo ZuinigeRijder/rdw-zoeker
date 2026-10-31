@@ -29,5 +29,11 @@ Voorbeeld:
 
 
 Sla rdw-zoeker.html op in een html bestand met deze naam en dubbelklik op dit bestand. Eventueel kun je het script binnen het html bestand aanpassen, zodat deze met andere defaults begint.
+Daarnaast kun je de defaults overrulen via parameters in de URL, bijvoorbeeld:
 
-Je kunt het tool ook direct uitvoeren, [via deze link](https://zuinigerijder.github.io/rdw-zoeker/rdw-zoeker.html)
+````
+rdw-zoeker.html?handelsbenaming=EV2&variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=1&zoek=1
+````
+
+Je kunt het tool ook direct uitvoeren, [via deze link](https://zuinigerijder.github.io/rdw-zoeker/rdw-zoeker.html?handelsbenaming=EV2&variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=1&zoek=1)
+

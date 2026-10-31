@@ -28,8 +28,9 @@
   <label>Eerste kleur <input id="kleur" value="GROEN"></label>
   <label>Prijs <input id="prijs" value="35440"></label>
   <label>Massa rijklaar <input id="massa_rijklaar" value="1650"></label>
-  <label><span><input type="checkbox" id="zonderNaam" checked> Alleen zonder tenaamstelling</span></label>
+  <label><span><input type="checkbox" id="zonderTenaamstelling" checked> Alleen zonder tenaamstelling</span></label>
   <button id="zoek">Zoeken</button>
+  <button id="kopieerLink" type="button">Kopieer link</button>
 </fieldset>
 
 <div id="status"></div>
@@ -84,7 +85,7 @@ async function zoek() {
   const kleur = document.getElementById("kleur").value.trim().toUpperCase();
   const prijs = document.getElementById("prijs").value.trim();
   const massa_rijklaar = document.getElementById("massa_rijklaar").value.trim();
-  const zonderNaam = document.getElementById("zonderNaam").checked;
+  const zonderTenaamstelling = document.getElementById("zonderTenaamstelling").checked;
 
   // Veilig quoten van de waarde voor de SoQL-query
   const quote = s => s.replace(/'/g, "''");
@@ -124,7 +125,7 @@ async function zoek() {
     (!variant || r.variant === variant) &&
     (!kleur || (r.eerste_kleur || "").toUpperCase() === kleur) &&
     (!prijs || r.catalogusprijs === prijs) &&
-    (!zonderNaam || !r.datum_tenaamstelling) &&
+    (!zonderTenaamstelling || !r.datum_tenaamstelling) &&
     (!massa_rijklaar || r.massa_rijklaar == massa_rijklaar)
   );
 
@@ -150,6 +151,80 @@ async function zoek() {
 }
 
 document.getElementById("zoek").addEventListener("click", zoek);
+
+// --- URL-parameters: overrulen de defaults van alle invoervelden ---
+// Voorbeeld: ?variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=0&zoek=1
+// Parameternaam = id van het invoerveld (hoofdletterongevoelig).
+// Lege waarde (bv. ?prijs=) = veld leegmaken = niet filteren.
+// zoek=1 start direct de zoekopdracht.
+const JA = ["1", "true", "ja", "on", "yes", ""];
+
+function toepassenUrlParameters() {
+  const params = new URLSearchParams(location.search);
+  if ([...params.keys()].length === 0) return;
+
+  const waarden = new Map([...params].map(([k, v]) => [k.toLowerCase(), v]));
+
+  document.querySelectorAll("input[id], select[id], textarea[id]").forEach(el => {
+    const sleutel = el.id.toLowerCase();
+    if (!waarden.has(sleutel)) return;
+    const waarde = waarden.get(sleutel);
+    if (el.type === "checkbox") {
+      el.checked = JA.includes(waarde.toLowerCase());
+    } else {
+      el.value = waarde;
+    }
+  });
+
+  if (waarden.has("zoek") && JA.includes(waarden.get("zoek").toLowerCase())) {
+    zoek();
+  }
+}
+
+// --- Kopieer link: huidige filterwaarden als URL, incl. zoek=1 ---
+// Werkt voor zowel https://... als file:///... (location.origin is bij file: "null",
+// dus de basis-URL komt uit location.href zonder query en hash).
+function maakLink() {
+  const params = new URLSearchParams();
+  document.querySelectorAll("input[id]").forEach(el => {
+    params.set(el.id, el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value.trim());
+  });
+  params.set("zoek", "1");
+  const basis = location.href.split(/[?#]/)[0];
+  return `${basis}?${params}`;
+}
+
+// Klembord: moderne API alleen in een secure context (https); bij file: valt het
+// terug op de oude execCommand-methode.
+async function kopieerNaarKlembord(tekst) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(tekst);
+      return true;
+    } catch (e) { /* val terug op execCommand */ }
+  }
+  const ta = document.createElement("textarea");
+  ta.value = tekst;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  return ok;
+}
+
+document.getElementById("kopieerLink").addEventListener("click", async () => {
+  const link = maakLink();
+  if (await kopieerNaarKlembord(link)) {
+    setStatus("Link gekopieerd naar het klembord.");
+  } else {
+    setStatus(`Kopiëren niet gelukt, kopieer zelf: ${link}`, true);
+  }
+});
+
+toepassenUrlParameters();
 </script>
 </body>
 </html>
