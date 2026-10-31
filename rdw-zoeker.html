@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDW zoeker</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 1100px; }
+  fieldset { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; border: 1px solid #aaa; border-radius: 6px; }
+  label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
+  input { padding: .3rem; }
+  button { padding: .5rem 1rem; cursor: pointer; }
+  #status { margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+  th, td { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; }
+  th { background: #eee; }
+  .fout { color: #b00020; }
+  pre { background: #f5f5f5; padding: .5rem; overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>RDW zoeker met of zonder tenaamstelling</h1>
+
+<fieldset>
+  <legend>Filters (leeg laten = niet filteren)</legend>
+  <label>Handelsbenaming <input id="handelsbenaming" value="EV2"></label>
+  <label>Variant <input id="variant" value="F5E22"></label>
+  <label>Eerste kleur <input id="kleur" value="GROEN"></label>
+  <label>Prijs <input id="prijs" value="35440"></label>
+  <label>Massa rijklaar <input id="massa_rijklaar" value="1650"></label>
+  <label><span><input type="checkbox" id="zonderNaam" checked> Alleen zonder tenaamstelling</span></label>
+  <button id="zoek">Zoeken</button>
+</fieldset>
+
+<div id="status"></div>
+<div id="resultaat"></div>
+
+<script>
+const URL_RDW = "https://opendata.rdw.nl/api/id/m9d7-ebf2.json";
+
+const KOLOMMEN = [
+  "kenteken",
+  "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt",
+  "variant",
+  "uitvoering",
+  "eerste_kleur",
+  "catalogusprijs",
+  "massa_rijklaar",
+  "datum_eerste_toelating",
+  "datum_eerste_afgifte_nederland",
+  "datum_eerste_tenaamstelling_in_nederland",
+];
+
+const statusEl = document.getElementById("status");
+const resultaatEl = document.getElementById("resultaat");
+
+function setStatus(tekst, isFout = false) {
+  statusEl.textContent = tekst;
+  statusEl.className = isFout ? "fout" : "";
+}
+
+function maakTabel(rijen, kolommen) {
+  const table = document.createElement("table");
+  const thead = table.createTHead().insertRow();
+  kolommen.forEach(k => {
+    const th = document.createElement("th");
+    th.textContent = k;
+    thead.appendChild(th);
+  });
+  const tbody = table.createTBody();
+  rijen.forEach(rij => {
+    const tr = tbody.insertRow();
+    kolommen.forEach(k => {
+      tr.insertCell().textContent = rij[k] ?? "";
+    });
+  });
+  return table;
+}
+
+async function zoek() {
+  resultaatEl.replaceChildren();
+  const handelsbenaming = document.getElementById("handelsbenaming").value.trim();
+  const variant = document.getElementById("variant").value.trim();
+  const kleur = document.getElementById("kleur").value.trim().toUpperCase();
+  const prijs = document.getElementById("prijs").value.trim();
+  const massa_rijklaar = document.getElementById("massa_rijklaar").value.trim();
+  const zonderNaam = document.getElementById("zonderNaam").checked;
+
+  // Veilig quoten van de waarde voor de SoQL-query
+  const quote = s => s.replace(/'/g, "''");
+
+  const params = new URLSearchParams({
+    "$select": "*",
+    "$where": `handelsbenaming = '${quote(handelsbenaming)}'`,
+    "$order": ":id ASC",
+    "$limit": "50000",
+    "$offset": "0",
+    "$$read_from_nbe": "true",
+    "$$version": "2.1",
+  });
+
+  setStatus("Gegevens worden opgehaald bij de RDW... Even geduld.");
+
+  let data;
+  try {
+    const response = await fetch(`${URL_RDW}?${params}`);
+    if (!response.ok) {
+      const tekst = await response.text();
+      setStatus(`Server fout ${response.status}: ${tekst.slice(0, 300)}`, true);
+      return;
+    }
+    data = await response.json();
+  } catch (e) {
+    setStatus(`Netwerkfout of ongeldige JSON: ${e.message}`, true);
+    return;
+  }
+
+  if (!Array.isArray(data) || data.length === 0) {
+    setStatus(`De RDW gaf een lege lijst terug voor handelsbenaming '${handelsbenaming}'.`);
+    return;
+  }
+
+  let gefilterd = data.filter(r =>
+    (!variant || r.variant === variant) &&
+    (!kleur || (r.eerste_kleur || "").toUpperCase() === kleur) &&
+    (!prijs || r.catalogusprijs === prijs) &&
+    (!zonderNaam || !r.datum_tenaamstelling) &&
+    (!massa_rijklaar || r.massa_rijklaar == massa_rijklaar)
+  );
+
+  if (gefilterd.length === 0) {
+    setStatus(`Geen resultaten voor deze configuratie. Er staan in totaal ${data.length} voertuigen in de database.`);
+    const kleuren = [...new Set(data.map(r => r.eerste_kleur))].sort();
+    const p = document.createElement("p");
+    p.textContent = "Unieke kleuren in de database:";
+    const pre = document.createElement("pre");
+    pre.textContent = kleuren.join(", ");
+    resultaatEl.append(p, pre);
+    return;
+  }
+
+  gefilterd.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
+
+  const sleutel = "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt";
+  gefilterd.sort((a, b) => (b[sleutel] || "").localeCompare(a[sleutel] || ""));
+
+  const beschikbaar = KOLOMMEN.filter(k => gefilterd.some(r => k in r));
+  setStatus(`Succes! ${gefilterd.length} voertuigen gevonden (van ${data.length} totaal).`);
+  resultaatEl.appendChild(maakTabel(gefilterd, beschikbaar));
+}
+
+document.getElementById("zoek").addEventListener("click", zoek);
+</script>
+</body>
+</html>
