@@ -23,3 +23,6 @@ Je zult wel even onderzoek moeten doen naar de variant mogelijkheden, bij de Kia
 - F4E22: 4-zits, Long Range (61,0 kWh)
 - F5E12: 5-zits, Standard Range (42,2 kWh)
 - F5E22: 5-zits, Long Range (61,0 kWh)
+
+Voorbeeld:
+![alt text](rdw-zoeker-voorbeeld.png)
