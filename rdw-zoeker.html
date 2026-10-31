@@ -50,6 +50,7 @@ const KOLOMMEN = [
   "datum_eerste_toelating",
   "datum_eerste_afgifte_nederland",
   "datum_eerste_tenaamstelling_in_nederland",
+  "datum_tenaamstelling",
 ];
 
 const statusEl = document.getElementById("status");
@@ -77,6 +78,18 @@ function maakTabel(rijen, kolommen) {
   });
   return table;
 }
+
+// Socrata laat lege velden vaak helemaal weg, dus "gevuld" = aanwezig en niet leeg.
+const gevuld = v => v !== undefined && v !== null && String(v).trim() !== "";
+
+// Staat het kenteken al op naam? Zoals in het Python-script: zodra een van de
+// tenaamstellings-/afgiftedatums gevuld is, is het voertuig al op naam gezet.
+// De BPM-datum (registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt) wordt
+// bewust NIET gebruikt: die is ook gevuld bij voertuigen die al op naam staan.
+const opNaam = r =>
+  gevuld(r.datum_eerste_afgifte_nederland) ||
+  gevuld(r.datum_eerste_tenaamstelling_in_nederland) ||
+  gevuld(r.datum_tenaamstelling);
 
 async function zoek() {
   resultaatEl.replaceChildren();
@@ -125,7 +138,7 @@ async function zoek() {
     (!variant || r.variant === variant) &&
     (!kleur || (r.eerste_kleur || "").toUpperCase() === kleur) &&
     (!prijs || r.catalogusprijs === prijs) &&
-    (!zonderTenaamstelling || !r.datum_tenaamstelling) &&
+    (!zonderTenaamstelling || !opNaam(r)) &&
     (!massa_rijklaar || r.massa_rijklaar == massa_rijklaar)
   );
 
