@@ -26,3 +26,8 @@ Je zult wel even onderzoek moeten doen naar de variant mogelijkheden, bij de Kia
 
 Voorbeeld:
 ![alt text](rdw-zoeker-voorbeeld.png)
+
+
+Sla rdw-zoeker.html op in een html bestand met deze naam en dubbelklik op dit bestand. Eventueel kun je het script binnen het html bestand aanpassen, zodat deze met andere defaults begint.
+
+Je kunt het tool ook direct uitvoeren, [via deze link](https://zuinigerijder.github.io/rdw-zoeker/rdw-zoeker.html)
