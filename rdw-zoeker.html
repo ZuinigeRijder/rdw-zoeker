@@ -165,7 +165,35 @@ EV2.gewichtTolerantie = 5;
 // Standaard velgmaat (inch) per uitvoering
 EV2.velgen = { "Essential": 16, "Air": 16, "Plus": 18, "Plus Advanced": 18, "GT-Line": 19, "Black-Line": 19 };
 
-const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_velgen", "ev2_opties", "ev2_kleur"];
+// WLTP-gegevens: actieradius (km), gemiddeld verbruik (kWh/100 km) en acceleratie 0-100 km/u (s).
+// Per batterij en velgmaat; bij de kleine accu heeft Essential eigen waarden (los van Air op 16 inch).
+EV2.specs = {
+  "42.2": {
+    Essential: { km: 312, verbruik: 15.4, acc: 8.5 },
+    16:        { km: 317, verbruik: 15.1, acc: 8.7 },
+    18:        { km: 308, verbruik: 15.5, acc: 8.7 },
+  },
+  "61": {
+    16: { km: 453, verbruik: 14.9, acc: 9.5 },
+    18: { km: 440, verbruik: 15.6, acc: 9.5 },
+    19: { km: 418, verbruik: 16.2, acc: 9.7 },
+  },
+};
+
+const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_velgen", "ev2_opties", "ev2_kleur",
+                      "ev2_wltp_km", "ev2_verbruik", "ev2_acceleratie"];
+
+const kommagetal = n => String(n).replace(".", ",");
+
+// Zoek de WLTP-specs bij batterij, uitvoering en velgmaat (null als niet eenduidig)
+function ev2Specs(v, modellen, maat) {
+  const tabel = v && EV2.specs[String(v.batterij)];
+  if (!tabel) return null;
+  if (modellen.length > 0 && modellen.every(m => m === "Essential")) return tabel.Essential || null;
+  if (modellen.includes("Essential")) return null; // niet eenduidig tussen Essential en andere uitvoeringen
+  const velgen = maat ?? (modellen.length === 1 ? EV2.velgen[modellen[0]] : null);
+  return velgen ? (tabel[velgen] || null) : null;
+}
 
 // Velgmaat afleiden uit massa_rijklaar, batterij en zitplaatsen (null als onbekend)
 function ev2Velgmaat(r) {
@@ -287,6 +315,12 @@ function verrijkEv2(r) {
   if (kleurOk.length > 0) configs = kleurOk;
   r._ev2configs = configs;
 
+  const uniekModellen = [...new Set(configs.map(c => c.model))];
+  const specs = ev2Specs(v, uniekModellen, maat);
+  r.ev2_wltp_km = specs ? `${specs.km} km` : "";
+  r.ev2_verbruik = specs ? `${kommagetal(specs.verbruik)} kWh/100 km` : "";
+  r.ev2_acceleratie = specs ? `${kommagetal(specs.acc)} s` : "";
+
   if (configs.length === 0) {
     r.ev2_model = "? (prijs past niet bij prijslijst)";
     r.ev2_opties = "";
@@ -363,7 +397,14 @@ const opNaam = r =>
   gevuld(r.datum_eerste_tenaamstelling_in_nederland) ||
   gevuld(r.datum_tenaamstelling);
 
+// Elke zoekopdracht krijgt een nummer. Antwoorden van een oudere zoekopdracht (bijv. door
+// dubbel klikken, of zoek=1 in de URL plus een klik) worden genegeerd, anders verschijnt
+// de tabel meerdere keren.
+let zoekTeller = 0;
+
 async function zoek() {
+  const mijnId = ++zoekTeller;
+  const verouderd = () => mijnId !== zoekTeller;
   resultaatEl.replaceChildren();
   const handelsbenaming = document.getElementById("handelsbenaming").value.trim();
   const variant = document.getElementById("variant").value.trim();
@@ -391,13 +432,16 @@ async function zoek() {
   let data;
   try {
     const response = await fetch(`${URL_RDW}?${params}`);
+    if (verouderd()) return;
     if (!response.ok) {
       const tekst = await response.text();
       setStatus(`Server fout ${response.status}: ${tekst.slice(0, 300)}`, true);
       return;
     }
     data = await response.json();
+    if (verouderd()) return;
   } catch (e) {
+    if (verouderd()) return;
     setStatus(`Netwerkfout of ongeldige JSON: ${e.message}`, true);
     return;
   }
@@ -442,7 +486,7 @@ async function zoek() {
     beschikbaar.splice(i, 0, ...EV2_KOLOMMEN);
   }
   setStatus(`Succes! ${gefilterd.length} voertuigen gevonden (van ${data.length} totaal).`);
-  resultaatEl.appendChild(maakTabel(gefilterd, beschikbaar));
+  resultaatEl.replaceChildren(maakTabel(gefilterd, beschikbaar));
 }
 
 document.getElementById("zoek").addEventListener("click", zoek);
