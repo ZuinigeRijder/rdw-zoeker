@@ -53,6 +53,14 @@
       <option value="61">61,0 kWh (Long Range)</option>
     </select>
   </label>
+  <label>Velgen
+    <select id="ev2_velgen_filter">
+      <option value="">alle</option>
+      <option value="16">16 inch</option>
+      <option value="18">18 inch</option>
+      <option value="19">19 inch</option>
+    </select>
+  </label>
   <label>Uitvoering
     <select id="ev2_model">
       <option value="">alle</option>
@@ -140,11 +148,45 @@ const EV2 = {
     { naam: "Frost Blue",        type: "metallic", rdw: ["BLAUW"], niet: ["Black-Line"] },
     { naam: "Magma Red",         type: "metallic", rdw: ["ROOD"] },
     { naam: "Vanilla Blossom",   type: "metallic", rdw: ["BRUIN"], niet: ["GT-Line", "Black-Line"] },
-    { naam: "Matte Ivory Silver", type: "mat",     rdw: ["ZILVER", "GRIJS", "BEIGE", "WIT"] },
+    // Matte lak is bij alle uitvoeringen alleen Matte Ivory Silver, staat bij de RDW als GRIJS
+    // en kost altijd de meerprijs voor matte lak.
+    { naam: "Matte Ivory Silver", type: "mat",     rdw: ["GRIJS"] },
   ],
 };
 
-const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_opties", "ev2_kleur"];
+// Leeggewicht (kg) per batterij, zitplaatsen en velgmaat (inch), uit de Kia-prijslijst.
+// massa_rijklaar in de RDW-data = leeggewicht + 100 kg.
+EV2.leeggewicht = {
+  "42.2": { 4: { 16: 1520, 18: 1540 }, 5: { 16: 1525, 18: 1545 } },
+  "61":   { 4: { 16: 1525, 18: 1545, 19: 1560 }, 5: { 16: 1530, 18: 1550, 19: 1565 } },
+};
+// Toegestaan verschil (kg) tussen RDW-gewicht en tabel
+EV2.gewichtTolerantie = 5;
+// Standaard velgmaat (inch) per uitvoering
+EV2.velgen = { "Essential": 16, "Air": 16, "Plus": 18, "Plus Advanced": 18, "GT-Line": 19, "Black-Line": 19 };
+
+const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_velgen", "ev2_opties", "ev2_kleur"];
+
+// Velgmaat afleiden uit massa_rijklaar, batterij en zitplaatsen (null als onbekend)
+function ev2Velgmaat(r) {
+  const v = EV2.varianten[r.variant];
+  const massa = Number(r.massa_rijklaar);
+  if (!v || !Number.isFinite(massa)) return null;
+  const tabel = EV2.leeggewicht[String(v.batterij)]?.[v.zitplaatsen];
+  if (!tabel) return null;
+  const leeg = massa - 100;
+  // De RDW heeft soms een iets afwijkend gewicht (bijv. 1615 i.p.v. 1620): kies de
+  // dichtstbijzijnde velgmaat binnen de tolerantie. Binnen een batterij/zitplaats-groep
+  // liggen de gewichten minstens 15 kg uit elkaar, dus dat blijft eenduidig.
+  let beste = null;
+  for (const [maat, kg] of Object.entries(tabel)) {
+    const verschil = Math.abs(kg - leeg);
+    if (verschil <= EV2.gewichtTolerantie && (beste === null || verschil < beste.verschil)) {
+      beste = { maat: Number(maat), verschil };
+    }
+  }
+  return beste ? beste.maat : null;
+}
 
 const ev2Actief = () =>
   document.getElementById("handelsbenaming").value.trim().toUpperCase() === "EV2";
@@ -170,9 +212,10 @@ function ev2Configuraties(r) {
     if (vierzitsStandaard && v.zitplaatsen !== 4) continue;
     const techPackMogelijk = b.model !== "Essential" && b.model !== "Air";
 
-    // Bij GT-Line en Black-Line is er geen meerprijs voor de exterieurkleur
-    for (const kleur of (b.kleurGratis ? [0] : [0, 1])) {
-      for (const mat of [0, 1]) {
+    // Matte lak (alleen Matte Ivory Silver) komt in plaats van de kleur-meerprijs.
+    // Bij GT-Line en Black-Line is er geen meerprijs voor de kleur, matte lak kost daar wel extra.
+    for (const mat of [0, 1]) {
+      for (const kleur of (b.kleurGratis || mat ? [0] : [0, 1])) {
         for (const tech of [0, 1]) {
           if (tech && !techPackMogelijk) continue;
           const totaal = b.fiscaal
@@ -194,7 +237,7 @@ function ev2OptiesTekst(c) {
   const o = [];
   if (c.vierzits) o.push("4-zits");
   if (c.tech) o.push("EV Tech Pack");
-  if (c.mat) o.push("matte lak");
+  if (c.mat) o.push("matte lak (Matte Ivory Silver)");
   if (c.kleur) o.push("meerprijs kleur");
   return o.length ? o.join(" + ") : "geen";
 }
@@ -202,15 +245,22 @@ function ev2OptiesTekst(c) {
 function ev2KleurNamen(c, eersteKleur) {
   const k = (eersteKleur || "").toUpperCase();
   const gratisTrim = c.model === "GT-Line" || c.model === "Black-Line";
-  // Beschikbaar op deze uitvoering en passend bij de RDW-kleur
+  // Kleuren die op deze uitvoering leverbaar zijn en bij de RDW-kleur passen
   let namen = EV2.kleuren.filter(x => x.rdw.includes(k) && !(x.niet || []).includes(c.model));
-  let label = "";
-  if (!gratisTrim) {
-    // Prijs bepaalt het type kleur: gratis, meerprijs of matte lak
-    label = c.mat ? "mat" : c.kleur ? "metallic" : "basis";
-    namen = namen.filter(x => x.type === label);
+  let label;
+  if (c.mat) {
+    // Matte lak (meerprijs) is altijd Matte Ivory Silver, bij de RDW GRIJS
+    label = "mat";
+    namen = namen.filter(x => x.type === "mat");
+  } else {
+    namen = namen.filter(x => x.type !== "mat");
+    if (!gratisTrim) {
+      // Prijs bepaalt: Casa White (gratis) of metallic (meerprijs)
+      label = c.kleur ? "metallic" : "basis";
+      namen = namen.filter(x => x.type === label);
+    }
+    // GT-Line/Black-Line: alle gewone kleuren zijn gratis, dus de prijs zegt niets over de kleur
   }
-  // GT-Line/Black-Line: geen kleur-meerprijs, dus de prijs zegt niets over de kleur
   return namen.length
     ? namen.map(x => x.naam)
     : [`onbekend (${label ? label + ", " : ""}${c.model}, RDW: ${k || "leeg"})`];
@@ -219,10 +269,23 @@ function ev2KleurNamen(c, eersteKleur) {
 // Voeg afgeleide EV2-velden toe aan een RDW-rij.
 function verrijkEv2(r) {
   const v = EV2.varianten[r.variant];
-  const configs = ev2Configuraties(r);
-  r._ev2configs = configs;
+  let configs = ev2Configuraties(r);
   r.ev2_batterij = v ? kwhTekst(v.batterij) : "?";
   r.ev2_zitplaatsen = v ? `${v.zitplaatsen}-zits` : "?";
+
+  // Velgmaat uit het gewicht; die moet bij de uitvoering passen
+  const maat = ev2Velgmaat(r);
+  r.ev2_velgen = maat ? `${maat} inch` : "?";
+  if (maat) {
+    const passend = configs.filter(c => EV2.velgen[c.model] === maat);
+    if (passend.length > 0) configs = passend;
+    else if (configs.length > 0) r.ev2_velgen += " (wijkt af van uitvoering)";
+  }
+  // Alleen configuraties houden waarvan de kleur bij de RDW-kleur past (als er dan nog iets overblijft)
+  const kleurPast = c => !ev2KleurNamen(c, r.eerste_kleur)[0].startsWith("onbekend");
+  const kleurOk = configs.filter(kleurPast);
+  if (kleurOk.length > 0) configs = kleurOk;
+  r._ev2configs = configs;
 
   if (configs.length === 0) {
     r.ev2_model = "? (prijs past niet bij prijslijst)";
@@ -242,10 +305,12 @@ function ev2Filter(r) {
   const zit = document.getElementById("ev2_zitplaatsen").value;
   const bat = document.getElementById("ev2_batterij").value;
   const model = document.getElementById("ev2_model").value;
+  const velgen = document.getElementById("ev2_velgen_filter").value;
   const v = EV2.varianten[r.variant];
 
   if (zit && (!v || String(v.zitplaatsen) !== zit)) return false;
   if (bat && (!v || v.batterij !== Number(bat))) return false;
+  if (velgen && r.ev2_velgen !== `${velgen} inch`) return false;
   if (model && !r._ev2configs.some(c => c.model === model)) return false;
   return true;
 }
@@ -384,7 +449,7 @@ document.getElementById("zoek").addEventListener("click", zoek);
 
 // --- URL-parameters: overrulen de defaults van alle invoervelden ---
 // Voorbeeld: ?variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=0&zoek=1
-// EV2-extra: &ev2_zitplaatsen=5&ev2_batterij=61&ev2_model=Plus
+// EV2-extra: &ev2_zitplaatsen=5&ev2_batterij=61&ev2_model=Plus&ev2_velgen_filter=18
 // Parameternaam = id van het invoerveld (hoofdletterongevoelig).
 // Lege waarde (bv. ?prijs=) = veld leegmaken = niet filteren.
 // zoek=1 start direct de zoekopdracht.
