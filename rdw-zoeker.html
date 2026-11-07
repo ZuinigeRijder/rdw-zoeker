@@ -27,6 +27,7 @@
 <fieldset>
   <legend>Filters (leeg laten = niet filteren)</legend>
   <label>Handelsbenaming <input id="handelsbenaming" value="EV2"></label>
+  <label>Kenteken (deel mag ook) <input id="kenteken" value="" placeholder="bijv. AB123C"></label>
   <label>Variant <input id="variant" value="F5E22"></label>
   <label>Eerste kleur <input id="kleur" value="GROEN"></label>
   <label>Prijs <input id="prijs" value="35440"></label>
@@ -412,14 +413,30 @@ async function zoek() {
   const prijs = document.getElementById("prijs").value.trim();
   const massa_rijklaar = document.getElementById("massa_rijklaar").value.trim();
   const zonderTenaamstelling = document.getElementById("zonderTenaamstelling").checked;
+  // Kenteken: streepjes, spaties en hoofdletters maken niet uit (de RDW bewaart ze zonder streepjes)
+  const kenteken = document.getElementById("kenteken").value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
   const ev2 = ev2Actief();
+
+  if (!handelsbenaming && !kenteken) {
+    setStatus("Vul een handelsbenaming of een kenteken in.", true);
+    return;
+  }
 
   // Veilig quoten van de waarde voor de SoQL-query
   const quote = s => s.replace(/'/g, "''");
 
+  // Zoekvoorwaarden: handelsbenaming en/of kenteken (kenteken is alfanumeriek, dus veilig)
+  const voorwaarden = [];
+  // Handelsbenaming gevuld: query op handelsbenaming en daarna lokaal filteren (ook op kenteken).
+  // Alleen kenteken (handelsbenaming leeg): query op kenteken. In beide gevallen worden daarna
+  // alle ingevulde filters lokaal toegepast.
+  if (handelsbenaming) voorwaarden.push(`handelsbenaming = '${quote(handelsbenaming)}'`);
+  else voorwaarden.push(`upper(kenteken) like '%${kenteken}%'`);
+  const where = voorwaarden.join(" AND ");
+
   const params = new URLSearchParams({
     "$select": "*",
-    "$where": `handelsbenaming = '${quote(handelsbenaming)}'`,
+    "$where": where,
     "$order": ":id ASC",
     "$limit": "50000",
     "$offset": "0",
@@ -447,30 +464,67 @@ async function zoek() {
   }
 
   if (!Array.isArray(data) || data.length === 0) {
-    setStatus(`De RDW gaf een lege lijst terug voor handelsbenaming '${handelsbenaming}'.`);
+    const wat = handelsbenaming ? `handelsbenaming '${handelsbenaming}'` : `kenteken '${kenteken}'`;
+    setStatus(`De RDW gaf een lege lijst terug voor ${wat}.`);
     return;
   }
 
-  // Alleen voor EV2: model, batterij, zitplaatsen, opties en kleurnamen afleiden
-  if (ev2) data.forEach(verrijkEv2);
+  // Voor elke EV2 in de resultaten (ook bij zoeken op kenteken): model, batterij,
+  // zitplaatsen, opties en kleurnamen afleiden
+  const isEv2 = r => (r.handelsbenaming || "").toUpperCase() === "EV2";
+  data.forEach(r => { if (isEv2(r)) verrijkEv2(r); });
 
-  let gefilterd = data.filter(r =>
-    (!variant || r.variant === variant) &&
-    (!kleur || (r.eerste_kleur || "").toUpperCase() === kleur) &&
-    (!prijs || r.catalogusprijs === prijs) &&
-    (!zonderTenaamstelling || !opNaam(r)) &&
-    (!massa_rijklaar || r.massa_rijklaar == massa_rijklaar) &&
-    (!ev2 || ev2Filter(r))
-  );
+  // Alle filters als lijst, zodat bij 0 resultaten te zien is welk filter de voertuigen weghaalt
+  const filters = [
+    { naam: `kenteken bevat '${kenteken}'`, actief: !!kenteken,
+      test: r => (r.kenteken || "").toUpperCase().includes(kenteken) },
+    { naam: `variant = ${variant}`, actief: !!variant, test: r => r.variant === variant },
+    { naam: `eerste kleur = ${kleur}`, actief: !!kleur,
+      test: r => (r.eerste_kleur || "").toUpperCase() === kleur },
+    { naam: `prijs = ${prijs}`, actief: !!prijs, test: r => r.catalogusprijs === prijs },
+    { naam: "alleen zonder tenaamstelling", actief: zonderTenaamstelling, test: r => !opNaam(r) },
+    { naam: `massa rijklaar = ${massa_rijklaar}`, actief: !!massa_rijklaar,
+      test: r => r.massa_rijklaar == massa_rijklaar },
+    { naam: "EV2-keuzelijsten (zitplaatsen/batterij/velgen/uitvoering)", actief: ev2, test: ev2Filter },
+  ].filter(f => f.actief);
+
+  const gefilterd = data.filter(r => filters.every(f => f.test(r)));
+
+  // Kolommen voor een lijst voertuigen (EV2-kolommen direct na het kenteken)
+  const kolommenVoor = rijen => {
+    const kol = KOLOMMEN.filter(k => rijen.some(r => k in r));
+    if (rijen.some(isEv2)) kol.splice(kol.indexOf("kenteken") + 1, 0, ...EV2_KOLOMMEN);
+    return kol;
+  };
 
   if (gefilterd.length === 0) {
-    setStatus(`Geen resultaten voor deze configuratie. Er staan in totaal ${data.length} voertuigen in de database.`);
-    const kleuren = [...new Set(data.map(r => r.eerste_kleur))].sort();
-    const p = document.createElement("p");
-    p.textContent = "Unieke kleuren in de database:";
-    const pre = document.createElement("pre");
-    pre.textContent = kleuren.join(", ");
-    resultaatEl.append(p, pre);
+    setStatus(`Geen resultaten: de RDW gaf ${data.length} voertuig(en), maar die voldoen niet aan alle ingevulde filters.`);
+    const uitleg = document.createElement("div");
+    const kop = document.createElement("p");
+    kop.textContent = "Zoveel voertuigen laat elk filter afzonderlijk door (leeg laten = niet filteren, vink 'Alleen zonder tenaamstelling' uit als je alles wilt zien):";
+    const ul = document.createElement("ul");
+    filters.forEach(f => {
+      const li = document.createElement("li");
+      li.textContent = `${f.naam}: ${data.filter(f.test).length} van ${data.length}`;
+      ul.appendChild(li);
+    });
+    uitleg.append(kop, ul);
+    resultaatEl.appendChild(uitleg);
+
+    if (data.length <= 25) {
+      // Weinig voertuigen: toon ze toch, zodat je ziet wat er gevonden is
+      const p = document.createElement("p");
+      p.textContent = "Gevonden voertuigen (zonder filters):";
+      data.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
+      resultaatEl.append(p, maakTabel(data, kolommenVoor(data)));
+    } else {
+      const kleuren = [...new Set(data.map(r => r.eerste_kleur))].sort();
+      const p = document.createElement("p");
+      p.textContent = "Unieke kleuren in de gevonden voertuigen:";
+      const pre = document.createElement("pre");
+      pre.textContent = kleuren.join(", ");
+      resultaatEl.append(p, pre);
+    }
     return;
   }
 
@@ -479,19 +533,14 @@ async function zoek() {
   const sleutel = "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt";
   gefilterd.sort((a, b) => (b[sleutel] || "").localeCompare(a[sleutel] || ""));
 
-  let beschikbaar = KOLOMMEN.filter(k => gefilterd.some(r => k in r));
-  if (ev2) {
-    // EV2-kolommen direct na het kenteken tonen
-    const i = beschikbaar.indexOf("kenteken") + 1;
-    beschikbaar.splice(i, 0, ...EV2_KOLOMMEN);
-  }
   setStatus(`Succes! ${gefilterd.length} voertuigen gevonden (van ${data.length} totaal).`);
-  resultaatEl.replaceChildren(maakTabel(gefilterd, beschikbaar));
+  resultaatEl.replaceChildren(maakTabel(gefilterd, kolommenVoor(gefilterd)));
 }
 
 document.getElementById("zoek").addEventListener("click", zoek);
 
 // --- URL-parameters: overrulen de defaults van alle invoervelden ---
+// Voorbeeld: ?kenteken=AB123C&handelsbenaming=&zonderTenaamstelling=0&variant=&kleur=&prijs=&massa_rijklaar=&zoek=1
 // Voorbeeld: ?variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=0&zoek=1
 // EV2-extra: &ev2_zitplaatsen=5&ev2_batterij=61&ev2_model=Plus&ev2_velgen_filter=18
 // Parameternaam = id van het invoerveld (hoofdletterongevoelig).
