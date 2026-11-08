@@ -2,14 +2,30 @@
 Zoeken naar kentekens in Nederland m.b.v. RDW API via een lokale HTML pagina. Met filters, met of zonder tenaamstelling.
 (Optioneel) filteren op:
  - handelsbenaming
+ - (deel) kenteken
  - variant
  - eerste kleur
  - fiscale waarde inclusief opties af fabriek
  - massa rijklaar
+ - wel of niet "Alleen zonder tenaamstelling"
+
+Je moet wel altijd of de handelsbenaming of kenteken invullen, de andere velden zijn optioneel.
 
 Vooral handig voor diegene die aan het wachten is op een auto en wil weten welke kentekens er al zijn, maar nog niet op naam.
-Het mooie is dat je dit lokaal kunt uitvoeren als html pagina.
-Pas de defaults aan (in het script zelf of vul in) en klik op zoeken.
+Het mooie is dat je dit zelf lokaal kunt uitvoeren als html pagina. Maar ik heb ook een html-pagina op hithub.io gehost, zodat je het daar direct kunt uitvoeren. Pas de defaults aan (in het script zelf of vul in) en klik op zoeken. Je kunt waardes via url parameters meegeven. Of klik op "Kopieer link" voor de url parameters (volledige link) wanneer je de waardes ingevuld hebt en bewaar deze link voor de volgende keer.
+
+[Voorbeeld voor IONIQ 5 nog niet op naam](https://zuinigerijder.github.io/rdw-zoeker/rdw-zoeker.html?handelsbenaming=IONIQ5&kenteken=&variant=&kleur=&prijs=&massa_rijklaar=&zonderTenaamstelling=1&zoek=1):
+
+![alt text](rdw-zoeker-voorbeeld.png)
+
+
+Voor een Kia EV2 tevens de mogelijkheid te filteren op:
+- aantal zitplaatsen
+- batterij grootte
+- velgen grootte
+- uitvoering
+
+Aan de hand van prijslijst en informatie van de RDW worden voor de Kia EV2 extra informatie van het (waarschijnlijke) model getoond.
 
 Als voorbeeld zijn ingevuld de waardes:
 - voor een Kia EV2 (handelsbenaming EV2)
@@ -25,7 +41,7 @@ Je zult wel even onderzoek moeten doen naar de variant mogelijkheden, bij de Kia
 - F5E22: 5-zits, Long Range (61,0 kWh)
 
 Voorbeeld:
-![alt text](rdw-zoeker-voorbeeld.png)
+![alt text](rdw-zoeker-voorbeeld-EV2.png)
 
 
 Sla rdw-zoeker.html op in een html bestand met deze naam en dubbelklik op dit bestand. Eventueel kun je het script binnen het html bestand aanpassen, zodat deze met andere defaults begint.

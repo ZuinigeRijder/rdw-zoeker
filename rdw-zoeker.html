@@ -1,630 +1,725 @@
 <!DOCTYPE html>
 <html lang="nl">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RDW zoeker</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 1100px; }
-  fieldset { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; border: 1px solid #aaa; border-radius: 6px; margin-bottom: 1rem; }
-  fieldset[hidden] { display: none; }
-  label { display: flex; flex-direction: column; font-size: .85rem; gap: .2rem; }
-  input, select { padding: .3rem; }
-  button { padding: .5rem 1rem; cursor: pointer; }
-  #status { margin: 1rem 0; }
-  table { border-collapse: collapse; width: 100%; font-size: .9rem; }
-  th, td { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; }
-  th { background: #eee; }
-  th.ev2, td.ev2 { background: #eef6ff; }
-  .fout { color: #b00020; }
-  pre { background: #f5f5f5; padding: .5rem; overflow-x: auto; }
-  .uitleg { font-size: .8rem; color: #555; }
-</style>
-</head>
-<body>
-<h1>RDW zoeker met of zonder tenaamstelling</h1>
-
-<fieldset>
-  <legend>Filters (leeg laten = niet filteren)</legend>
-  <label>Handelsbenaming <input id="handelsbenaming" value="EV2"></label>
-  <label>Kenteken (deel mag ook) <input id="kenteken" value="" placeholder="bijv. AB123C"></label>
-  <label>Variant <input id="variant" value="F5E22"></label>
-  <label>Eerste kleur <input id="kleur" value="GROEN"></label>
-  <label>Prijs <input id="prijs" value="35440"></label>
-  <label>Massa rijklaar <input id="massa_rijklaar" value="1650"></label>
-  <label><span><input type="checkbox" id="zonderTenaamstelling" checked> Alleen zonder tenaamstelling</span></label>
-  <button id="zoek">Zoeken</button>
-  <button id="kopieerLink" type="button">Kopieer link</button>
-</fieldset>
-
-<!-- Extra filters, alleen zichtbaar bij handelsbenaming EV2 -->
-<fieldset id="ev2Filters" hidden>
-  <legend>Kia EV2: model (afgeleid uit variant, uitvoering en prijs)</legend>
-  <label>Zitplaatsen
-    <select id="ev2_zitplaatsen">
-      <option value="">alle</option>
-      <option value="4">4-zits</option>
-      <option value="5">5-zits</option>
-    </select>
-  </label>
-  <label>Batterij
-    <select id="ev2_batterij">
-      <option value="">alle</option>
-      <option value="42.2">42,2 kWh (Standard Range)</option>
-      <option value="61">61,0 kWh (Long Range)</option>
-    </select>
-  </label>
-  <label>Velgen
-    <select id="ev2_velgen_filter">
-      <option value="">alle</option>
-      <option value="16">16 inch</option>
-      <option value="18">18 inch</option>
-      <option value="19">19 inch</option>
-    </select>
-  </label>
-  <label>Uitvoering
-    <select id="ev2_model">
-      <option value="">alle</option>
-      <option>Essential</option>
-      <option>Air</option>
-      <option>Plus</option>
-      <option>Plus Advanced</option>
-      <option>GT-Line</option>
-      <option>Black-Line</option>
-    </select>
-  </label>
-  <span class="uitleg">De prijs in de RDW-data (fiscale waarde + opties) wordt vergeleken met de Kia-prijslijst om de uitvoering en opties te achterhalen.</span>
-</fieldset>
-
-<div id="status"></div>
-<div id="resultaat"></div>
-
-<script>
-const URL_RDW = "https://opendata.rdw.nl/api/id/m9d7-ebf2.json";
-
-const KOLOMMEN = [
-  "kenteken",
-  "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt",
-  "variant",
-  "uitvoering",
-  "eerste_kleur",
-  "catalogusprijs",
-  "massa_rijklaar",
-  "datum_eerste_toelating",
-  "datum_eerste_afgifte_nederland",
-  "datum_eerste_tenaamstelling_in_nederland",
-  "datum_tenaamstelling",
-];
-
-// ---------------------------------------------------------------------------
-// Kia EV2: uitzondering voor de handelsbenaming "EV2"
-// ---------------------------------------------------------------------------
-const EV2 = {
-  // RDW-uitvoeringscode -> uitvoeringen die daar onder vallen.
-  // Black-Line is aangenomen bij E11CX1 (GT-Line); onbekende codes worden niet gefilterd.
-  uitvoeringscodes: {
-    E11DY1: ["Essential"],
-    E11AZ1: ["Air"],
-    E11BZ1: ["Plus", "Plus Advanced"],
-    E11CX1: ["GT-Line", "Black-Line"],
-  },
-
-  // RDW-variantcode -> zitplaatsen en batterij (kWh)
-  varianten: {
-    F4E12: { zitplaatsen: 4, batterij: 42.2 },
-    F4E22: { zitplaatsen: 4, batterij: 61 },
-    F5E12: { zitplaatsen: 5, batterij: 42.2 },
-    F5E22: { zitplaatsen: 5, batterij: 61 },
-  },
-
-  // Fiscale waarde (incl. BTW en BPM) per batterij en uitvoering, uit de Kia-prijslijst
-  basis: [
-    { batterij: 42.2, model: "Essential",     code: "E11DY1", fiscaal: 26645 },
-    { batterij: 42.2, model: "Air",           code: "E11AZ1", fiscaal: 29145 },
-    { batterij: 42.2, model: "Plus",          code: "E11BZ1", fiscaal: 31145 },
-    { batterij: 42.2, model: "Plus Advanced", code: "E11BZ1", fiscaal: 33145 },
-    { batterij: 61,   model: "Air",           code: "E11AZ1", fiscaal: 32645 },
-    { batterij: 61,   model: "Plus",          code: "E11BZ1", fiscaal: 34645 },
-    { batterij: 61,   model: "Plus Advanced", code: "E11BZ1", fiscaal: 36645 },
-    { batterij: 61,   model: "GT-Line",       code: "E11CX1", fiscaal: 38945, kleurGratis: true },
-    { batterij: 61,   model: "Black-Line",    code: "E11CX1", fiscaal: 39345, kleurGratis: true },
-  ],
-
-  // Opties (consumentenprijs, dus incl. BTW)
-  prijsKleur: 795,       // meerprijs exterieurkleur (Casa White is gratis)
-  prijsMat: 1795,        // matte lak
-  prijsVierzits: 500,    // 4-zits (Essential uitgesloten)
-  prijsTechPack: 1995,   // EV Tech Pack (Essential en Air uitgesloten)
-
-  // Exterieurkleuren met de kleurnamen zoals de RDW die waarschijnlijk registreert.
-  // Dit is een inschatting; pas de rdw-lijsten aan als een kleur anders geregistreerd staat.
-  // type: basis = gratis, metallic = meerprijs exterieurkleur, mat = matte lak
-  kleuren: [
-    { naam: "Casa White",        type: "basis",    rdw: ["WIT"], niet: ["GT-Line", "Black-Line"] },
-    { naam: "Deluxe White",      type: "metallic", rdw: ["WIT"] },
-    { naam: "Wolf Grey",         type: "metallic", rdw: ["GRIJS"] },
-    { naam: "Penta Metal",       type: "metallic", rdw: ["GRIJS", "ZWART"] },
-    { naam: "Black Pearl",       type: "metallic", rdw: ["ZWART"], niet: ["GT-Line"] },
-    { naam: "Morning Haze",      type: "metallic", rdw: ["GROEN"] },
-    { naam: "Frost Blue",        type: "metallic", rdw: ["BLAUW"], niet: ["Black-Line"] },
-    { naam: "Magma Red",         type: "metallic", rdw: ["ROOD"] },
-    { naam: "Vanilla Blossom",   type: "metallic", rdw: ["BRUIN"], niet: ["GT-Line", "Black-Line"] },
-    // Matte lak is bij alle uitvoeringen alleen Matte Ivory Silver, staat bij de RDW als GRIJS
-    // en kost altijd de meerprijs voor matte lak.
-    { naam: "Matte Ivory Silver", type: "mat",     rdw: ["GRIJS"] },
-  ],
-};
-
-// Leeggewicht (kg) per batterij, zitplaatsen en velgmaat (inch), uit de Kia-prijslijst.
-// massa_rijklaar in de RDW-data = leeggewicht + 100 kg.
-EV2.leeggewicht = {
-  "42.2": { 4: { 16: 1520, 18: 1540 }, 5: { 16: 1525, 18: 1545 } },
-  "61":   { 4: { 16: 1525, 18: 1545, 19: 1560 }, 5: { 16: 1530, 18: 1550, 19: 1565 } },
-};
-// Toegestaan verschil (kg) tussen RDW-gewicht en tabel
-EV2.gewichtTolerantie = 5;
-// Standaard velgmaat (inch) per uitvoering
-EV2.velgen = { "Essential": 16, "Air": 16, "Plus": 18, "Plus Advanced": 18, "GT-Line": 19, "Black-Line": 19 };
-
-// WLTP-gegevens: actieradius (km), gemiddeld verbruik (kWh/100 km) en acceleratie 0-100 km/u (s).
-// Per batterij en velgmaat; bij de kleine accu heeft Essential eigen waarden (los van Air op 16 inch).
-EV2.specs = {
-  "42.2": {
-    Essential: { km: 312, verbruik: 15.4, acc: 8.5 },
-    16:        { km: 317, verbruik: 15.1, acc: 8.7 },
-    18:        { km: 308, verbruik: 15.5, acc: 8.7 },
-  },
-  "61": {
-    16: { km: 453, verbruik: 14.9, acc: 9.5 },
-    18: { km: 440, verbruik: 15.6, acc: 9.5 },
-    19: { km: 418, verbruik: 16.2, acc: 9.7 },
-  },
-};
-
-const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_velgen", "ev2_opties", "ev2_kleur",
-                      "ev2_wltp_km", "ev2_verbruik", "ev2_acceleratie"];
-
-const kommagetal = n => String(n).replace(".", ",");
-
-// Zoek de WLTP-specs bij batterij, uitvoering en velgmaat (null als niet eenduidig)
-function ev2Specs(v, modellen, maat) {
-  const tabel = v && EV2.specs[String(v.batterij)];
-  if (!tabel) return null;
-  if (modellen.length > 0 && modellen.every(m => m === "Essential")) return tabel.Essential || null;
-  if (modellen.includes("Essential")) return null; // niet eenduidig tussen Essential en andere uitvoeringen
-  const velgen = maat ?? (modellen.length === 1 ? EV2.velgen[modellen[0]] : null);
-  return velgen ? (tabel[velgen] || null) : null;
-}
-
-// Velgmaat afleiden uit massa_rijklaar, batterij en zitplaatsen (null als onbekend)
-function ev2Velgmaat(r) {
-  const v = EV2.varianten[r.variant];
-  const massa = Number(r.massa_rijklaar);
-  if (!v || !Number.isFinite(massa)) return null;
-  const tabel = EV2.leeggewicht[String(v.batterij)]?.[v.zitplaatsen];
-  if (!tabel) return null;
-  const leeg = massa - 100;
-  // De RDW heeft soms een iets afwijkend gewicht (bijv. 1615 i.p.v. 1620): kies de
-  // dichtstbijzijnde velgmaat binnen de tolerantie. Binnen een batterij/zitplaats-groep
-  // liggen de gewichten minstens 15 kg uit elkaar, dus dat blijft eenduidig.
-  let beste = null;
-  for (const [maat, kg] of Object.entries(tabel)) {
-    const verschil = Math.abs(kg - leeg);
-    if (verschil <= EV2.gewichtTolerantie && (beste === null || verschil < beste.verschil)) {
-      beste = { maat: Number(maat), verschil };
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RDW zoeker</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      margin: 2rem;
+      max-width: 1100px;
     }
-  }
-  return beste ? beste.maat : null;
-}
 
-const ev2Actief = () =>
-  document.getElementById("handelsbenaming").value.trim().toUpperCase() === "EV2";
+    fieldset {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      align-items: end;
+      border: 1px solid #aaa;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+    }
 
-const kwhTekst = kwh => `${String(kwh).replace(".", ",")} kWh`;
+    fieldset[hidden] {
+      display: none;
+    }
 
-// Zoek alle combinaties van uitvoering + opties die precies op de catalogusprijs uitkomen.
-function ev2Configuraties(r) {
-  const v = EV2.varianten[r.variant];
-  const prijs = Math.round(Number(r.catalogusprijs));
-  if (!v || !Number.isFinite(prijs)) return [];
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: .85rem;
+      gap: .2rem;
+    }
 
-  const code = r.uitvoering;
-  const codeBekend = code in EV2.uitvoeringscodes;
-  const kandidaten = EV2.basis.filter(b =>
-    b.batterij === v.batterij && (!codeBekend || b.code === code)
-  );
+    input,
+    select {
+      padding: .3rem;
+    }
 
-  const resultaat = [];
-  for (const b of kandidaten) {
-    // Bij Essential is 4-zits standaard: geen meerprijs, en er is geen 5-zits Essential.
-    const vierzitsStandaard = b.model === "Essential";
-    if (vierzitsStandaard && v.zitplaatsen !== 4) continue;
-    const techPackMogelijk = b.model !== "Essential" && b.model !== "Air";
+    button {
+      padding: .5rem 1rem;
+      cursor: pointer;
+    }
 
-    // Matte lak (alleen Matte Ivory Silver) komt in plaats van de kleur-meerprijs.
-    // Bij GT-Line en Black-Line is er geen meerprijs voor de kleur, matte lak kost daar wel extra.
-    for (const mat of [0, 1]) {
-      for (const kleur of (b.kleurGratis || mat ? [0] : [0, 1])) {
-        for (const tech of [0, 1]) {
-          if (tech && !techPackMogelijk) continue;
-          const totaal = b.fiscaal
-            + (v.zitplaatsen === 4 && !vierzitsStandaard ? EV2.prijsVierzits : 0)
-            + kleur * EV2.prijsKleur
-            + mat * EV2.prijsMat
-            + tech * EV2.prijsTechPack;
-          if (totaal === prijs) {
-            resultaat.push({ model: b.model, kleur, mat, tech, vierzits: v.zitplaatsen === 4 && !vierzitsStandaard });
+    #status {
+      margin: 1rem 0;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: .9rem;
+    }
+
+    th,
+    td {
+      border: 1px solid #ccc;
+      padding: .3rem .5rem;
+      text-align: left;
+    }
+
+    th {
+      background: #eee;
+    }
+
+    th.ev2,
+    td.ev2 {
+      background: #eef6ff;
+    }
+
+    .fout {
+      color: #b00020;
+    }
+
+    pre {
+      background: #f5f5f5;
+      padding: .5rem;
+      overflow-x: auto;
+    }
+
+    .uitleg {
+      font-size: .8rem;
+      color: #555;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>RDW zoeker met of zonder tenaamstelling</h1>
+
+  <fieldset>
+    <legend>Filters (leeg laten = niet filteren)</legend>
+    <label>Handelsbenaming <input id="handelsbenaming" value="EV2"></label>
+    <label>Kenteken (deel mag ook) <input id="kenteken" value="" placeholder="bijv. AB123C"></label>
+    <label>Variant <input id="variant" value="F5E22"></label>
+    <label>Eerste kleur <input id="kleur" value="GROEN"></label>
+    <label>Prijs <input id="prijs" value="35440"></label>
+    <label>Massa rijklaar <input id="massa_rijklaar" value="1650"></label>
+    <label><span><input type="checkbox" id="zonderTenaamstelling" checked> Alleen zonder tenaamstelling</span></label>
+    <button id="zoek">Zoeken</button>
+    <button id="kopieerLink" type="button">Kopieer link</button>
+  </fieldset>
+
+  <!-- Extra filters, alleen zichtbaar bij handelsbenaming EV2 -->
+  <fieldset id="ev2Filters" hidden>
+    <legend>Kia EV2: model (afgeleid uit variant, uitvoering en prijs)</legend>
+    <label>Zitplaatsen
+      <select id="ev2_zitplaatsen">
+        <option value="">alle</option>
+        <option value="4">4-zits</option>
+        <option value="5">5-zits</option>
+      </select>
+    </label>
+    <label>Batterij
+      <select id="ev2_batterij">
+        <option value="">alle</option>
+        <option value="42.2">42,2 kWh (Standard Range)</option>
+        <option value="61">61,0 kWh (Long Range)</option>
+      </select>
+    </label>
+    <label>Velgen
+      <select id="ev2_velgen_filter">
+        <option value="">alle</option>
+        <option value="16">16 inch</option>
+        <option value="18">18 inch</option>
+        <option value="19">19 inch</option>
+      </select>
+    </label>
+    <label>Uitvoering
+      <select id="ev2_model">
+        <option value="">alle</option>
+        <option>Essential</option>
+        <option>Air</option>
+        <option>Plus</option>
+        <option>Plus Advanced</option>
+        <option>GT-Line</option>
+        <option>Black-Line</option>
+      </select>
+    </label>
+    <span class="uitleg">De prijs in de RDW-data (fiscale waarde + opties) wordt vergeleken met de Kia-prijslijst om de
+      uitvoering en opties te achterhalen.</span>
+  </fieldset>
+
+  <div id="status"></div>
+  <div id="resultaat"></div>
+
+  <script>
+    const URL_RDW = "https://opendata.rdw.nl/api/id/m9d7-ebf2.json";
+
+    const KOLOMMEN = [
+      "kenteken",
+      "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt",
+      "variant",
+      "uitvoering",
+      "eerste_kleur",
+      "catalogusprijs",
+      "massa_rijklaar",
+      "datum_eerste_toelating",
+      "datum_eerste_afgifte_nederland",
+      "datum_eerste_tenaamstelling_in_nederland",
+      "datum_tenaamstelling",
+    ];
+
+    // ---------------------------------------------------------------------------
+    // Kia EV2: uitzondering voor de handelsbenaming "EV2"
+    // ---------------------------------------------------------------------------
+    const EV2 = {
+      // RDW-uitvoeringscode -> uitvoeringen die daar onder vallen.
+      // Black-Line is aangenomen bij E11CX1 (GT-Line); onbekende codes worden niet gefilterd.
+      uitvoeringscodes: {
+        E11DY1: ["Essential"],
+        E11AZ1: ["Air"],
+        E11BZ1: ["Plus", "Plus Advanced"],
+        E11CX1: ["GT-Line", "Black-Line"],
+      },
+
+      // RDW-variantcode -> zitplaatsen en batterij (kWh)
+      varianten: {
+        F4E12: { zitplaatsen: 4, batterij: 42.2 },
+        F4E22: { zitplaatsen: 4, batterij: 61 },
+        F5E12: { zitplaatsen: 5, batterij: 42.2 },
+        F5E22: { zitplaatsen: 5, batterij: 61 },
+      },
+
+      // Fiscale waarde (incl. BTW en BPM) per batterij en uitvoering, uit de Kia-prijslijst
+      basis: [
+        { batterij: 42.2, model: "Essential", code: "E11DY1", fiscaal: 26645 },
+        { batterij: 42.2, model: "Air", code: "E11AZ1", fiscaal: 29145 },
+        { batterij: 42.2, model: "Plus", code: "E11BZ1", fiscaal: 31145 },
+        { batterij: 42.2, model: "Plus Advanced", code: "E11BZ1", fiscaal: 33145 },
+        { batterij: 61, model: "Air", code: "E11AZ1", fiscaal: 32645 },
+        { batterij: 61, model: "Plus", code: "E11BZ1", fiscaal: 34645 },
+        { batterij: 61, model: "Plus Advanced", code: "E11BZ1", fiscaal: 36645 },
+        { batterij: 61, model: "GT-Line", code: "E11CX1", fiscaal: 38945, kleurGratis: true },
+        { batterij: 61, model: "Black-Line", code: "E11CX1", fiscaal: 39345, kleurGratis: true },
+      ],
+
+      // Opties (consumentenprijs, dus incl. BTW)
+      prijsKleur: 795,       // meerprijs exterieurkleur (Casa White is gratis)
+      prijsMat: 1795,        // matte lak
+      prijsVierzits: 500,    // 4-zits (Essential uitgesloten)
+      prijsTechPack: 1995,   // EV Tech Pack (Essential en Air uitgesloten)
+
+      // Exterieurkleuren met de kleurnamen zoals de RDW die waarschijnlijk registreert.
+      // Dit is een inschatting; pas de rdw-lijsten aan als een kleur anders geregistreerd staat.
+      // type: basis = gratis, metallic = meerprijs exterieurkleur, mat = matte lak
+      kleuren: [
+        { naam: "Casa White", type: "basis", rdw: ["WIT"], niet: ["GT-Line", "Black-Line"] },
+        { naam: "Deluxe White", type: "metallic", rdw: ["WIT"] },
+        { naam: "Wolf Grey", type: "metallic", rdw: ["GRIJS"] },
+        { naam: "Penta Metal", type: "metallic", rdw: ["GRIJS", "ZWART"] },
+        { naam: "Black Pearl", type: "metallic", rdw: ["ZWART"], niet: ["GT-Line"] },
+        { naam: "Morning Haze", type: "metallic", rdw: ["GROEN"] },
+        { naam: "Frost Blue", type: "metallic", rdw: ["BLAUW"], niet: ["Black-Line"] },
+        { naam: "Magma Red", type: "metallic", rdw: ["ROOD"] },
+        { naam: "Vanilla Blossom", type: "metallic", rdw: ["BRUIN"], niet: ["GT-Line", "Black-Line"] },
+        // Matte lak is bij alle uitvoeringen alleen Matte Ivory Silver, staat bij de RDW als GRIJS
+        // en kost altijd de meerprijs voor matte lak.
+        { naam: "Matte Ivory Silver", type: "mat", rdw: ["GRIJS"] },
+      ],
+    };
+
+    // Leeggewicht (kg) per batterij, zitplaatsen en velgmaat (inch), uit de Kia-prijslijst.
+    // massa_rijklaar in de RDW-data = leeggewicht + 100 kg.
+    EV2.leeggewicht = {
+      "42.2": { 4: { 16: 1520, 18: 1540 }, 5: { 16: 1525, 18: 1545 } },
+      "61": { 4: { 16: 1525, 18: 1545, 19: 1560 }, 5: { 16: 1530, 18: 1550, 19: 1565 } },
+    };
+    // Toegestaan verschil (kg) tussen RDW-gewicht en tabel
+    EV2.gewichtTolerantie = 5;
+    // Standaard velgmaat (inch) per uitvoering
+    EV2.velgen = { "Essential": 16, "Air": 16, "Plus": 18, "Plus Advanced": 18, "GT-Line": 19, "Black-Line": 19 };
+
+    // WLTP-gegevens: actieradius (km), gemiddeld verbruik (kWh/100 km) en acceleratie 0-100 km/u (s).
+    // Per batterij en velgmaat; bij de kleine accu heeft Essential eigen waarden (los van Air op 16 inch).
+    EV2.specs = {
+      "42.2": {
+        Essential: { km: 312, verbruik: 15.4, acc: 8.5 },
+        16: { km: 317, verbruik: 15.1, acc: 8.7 },
+        18: { km: 308, verbruik: 15.5, acc: 8.7 },
+      },
+      "61": {
+        16: { km: 453, verbruik: 14.9, acc: 9.5 },
+        18: { km: 440, verbruik: 15.6, acc: 9.5 },
+        19: { km: 418, verbruik: 16.2, acc: 9.7 },
+      },
+    };
+
+    const EV2_KOLOMMEN = ["ev2_model", "ev2_batterij", "ev2_zitplaatsen", "ev2_velgen", "ev2_opties", "ev2_kleur",
+      "ev2_wltp_km", "ev2_verbruik", "ev2_acceleratie"];
+
+    const kommagetal = n => String(n).replace(".", ",");
+
+    // Zoek de WLTP-specs bij batterij, uitvoering en velgmaat (null als niet eenduidig)
+    function ev2Specs(v, modellen, maat)
+    {
+      const tabel = v && EV2.specs[String(v.batterij)];
+      if (!tabel) return null;
+      if (modellen.length > 0 && modellen.every(m => m === "Essential")) return tabel.Essential || null;
+      if (modellen.includes("Essential")) return null; // niet eenduidig tussen Essential en andere uitvoeringen
+      const velgen = maat ?? (modellen.length === 1 ? EV2.velgen[modellen[0]] : null);
+      return velgen ? (tabel[velgen] || null) : null;
+    }
+
+    // Velgmaat afleiden uit massa_rijklaar, batterij en zitplaatsen (null als onbekend)
+    function ev2Velgmaat(r)
+    {
+      const v = EV2.varianten[r.variant];
+      const massa = Number(r.massa_rijklaar);
+      if (!v || !Number.isFinite(massa)) return null;
+      const tabel = EV2.leeggewicht[String(v.batterij)]?.[v.zitplaatsen];
+      if (!tabel) return null;
+      const leeg = massa - 100;
+      // De RDW heeft soms een iets afwijkend gewicht (bijv. 1615 i.p.v. 1620): kies de
+      // dichtstbijzijnde velgmaat binnen de tolerantie. Binnen een batterij/zitplaats-groep
+      // liggen de gewichten minstens 15 kg uit elkaar, dus dat blijft eenduidig.
+      let beste = null;
+      for (const [maat, kg] of Object.entries(tabel)) {
+        const verschil = Math.abs(kg - leeg);
+        if (verschil <= EV2.gewichtTolerantie && (beste === null || verschil < beste.verschil)) {
+          beste = { maat: Number(maat), verschil };
+        }
+      }
+      return beste ? beste.maat : null;
+    }
+
+    const ev2Actief = () =>
+      document.getElementById("handelsbenaming").value.trim().toUpperCase() === "EV2";
+
+    const kwhTekst = kwh => `${String(kwh).replace(".", ",")} kWh`;
+
+    // Zoek alle combinaties van uitvoering + opties die precies op de catalogusprijs uitkomen.
+    function ev2Configuraties(r)
+    {
+      const v = EV2.varianten[r.variant];
+      const prijs = Math.round(Number(r.catalogusprijs));
+      if (!v || !Number.isFinite(prijs)) return [];
+
+      const code = r.uitvoering;
+      const codeBekend = code in EV2.uitvoeringscodes;
+      const kandidaten = EV2.basis.filter(b =>
+        b.batterij === v.batterij && (!codeBekend || b.code === code)
+      );
+
+      const resultaat = [];
+      for (const b of kandidaten) {
+        // Bij Essential is 4-zits standaard: geen meerprijs, en er is geen 5-zits Essential.
+        const vierzitsStandaard = b.model === "Essential";
+        if (vierzitsStandaard && v.zitplaatsen !== 4) continue;
+        const techPackMogelijk = b.model !== "Essential" && b.model !== "Air";
+
+        // Matte lak (alleen Matte Ivory Silver) komt in plaats van de kleur-meerprijs.
+        // Bij GT-Line en Black-Line is er geen meerprijs voor de kleur, matte lak kost daar wel extra.
+        for (const mat of [0, 1]) {
+          for (const kleur of (b.kleurGratis || mat ? [0] : [0, 1])) {
+            for (const tech of [0, 1]) {
+              if (tech && !techPackMogelijk) continue;
+              const totaal = b.fiscaal
+                + (v.zitplaatsen === 4 && !vierzitsStandaard ? EV2.prijsVierzits : 0)
+                + kleur * EV2.prijsKleur
+                + mat * EV2.prijsMat
+                + tech * EV2.prijsTechPack;
+              if (totaal === prijs) {
+                resultaat.push({ model: b.model, kleur, mat, tech, vierzits: v.zitplaatsen === 4 && !vierzitsStandaard });
+              }
+            }
           }
         }
       }
+      return resultaat;
     }
-  }
-  return resultaat;
-}
 
-function ev2OptiesTekst(c) {
-  const o = [];
-  if (c.vierzits) o.push("4-zits");
-  if (c.tech) o.push("EV Tech Pack");
-  if (c.mat) o.push("matte lak (Matte Ivory Silver)");
-  if (c.kleur) o.push("meerprijs kleur");
-  return o.length ? o.join(" + ") : "geen";
-}
-
-function ev2KleurNamen(c, eersteKleur) {
-  const k = (eersteKleur || "").toUpperCase();
-  const gratisTrim = c.model === "GT-Line" || c.model === "Black-Line";
-  // Kleuren die op deze uitvoering leverbaar zijn en bij de RDW-kleur passen
-  let namen = EV2.kleuren.filter(x => x.rdw.includes(k) && !(x.niet || []).includes(c.model));
-  let label;
-  if (c.mat) {
-    // Matte lak (meerprijs) is altijd Matte Ivory Silver, bij de RDW GRIJS
-    label = "mat";
-    namen = namen.filter(x => x.type === "mat");
-  } else {
-    namen = namen.filter(x => x.type !== "mat");
-    if (!gratisTrim) {
-      // Prijs bepaalt: Casa White (gratis) of metallic (meerprijs)
-      label = c.kleur ? "metallic" : "basis";
-      namen = namen.filter(x => x.type === label);
+    function ev2OptiesTekst(c)
+    {
+      const o = [];
+      if (c.vierzits) o.push("4-zits");
+      if (c.tech) o.push("EV Tech Pack");
+      if (c.mat) o.push("matte lak (Matte Ivory Silver)");
+      if (c.kleur) o.push("meerprijs kleur");
+      return o.length ? o.join(" + ") : "geen";
     }
-    // GT-Line/Black-Line: alle gewone kleuren zijn gratis, dus de prijs zegt niets over de kleur
-  }
-  return namen.length
-    ? namen.map(x => x.naam)
-    : [`onbekend (${label ? label + ", " : ""}${c.model}, RDW: ${k || "leeg"})`];
-}
 
-// Voeg afgeleide EV2-velden toe aan een RDW-rij.
-function verrijkEv2(r) {
-  const v = EV2.varianten[r.variant];
-  let configs = ev2Configuraties(r);
-  r.ev2_batterij = v ? kwhTekst(v.batterij) : "?";
-  r.ev2_zitplaatsen = v ? `${v.zitplaatsen}-zits` : "?";
-
-  // Velgmaat uit het gewicht; die moet bij de uitvoering passen
-  const maat = ev2Velgmaat(r);
-  r.ev2_velgen = maat ? `${maat} inch` : "?";
-  if (maat) {
-    const passend = configs.filter(c => EV2.velgen[c.model] === maat);
-    if (passend.length > 0) configs = passend;
-    else if (configs.length > 0) r.ev2_velgen += " (wijkt af van uitvoering)";
-  }
-  // Alleen configuraties houden waarvan de kleur bij de RDW-kleur past (als er dan nog iets overblijft)
-  const kleurPast = c => !ev2KleurNamen(c, r.eerste_kleur)[0].startsWith("onbekend");
-  const kleurOk = configs.filter(kleurPast);
-  if (kleurOk.length > 0) configs = kleurOk;
-  r._ev2configs = configs;
-
-  const uniekModellen = [...new Set(configs.map(c => c.model))];
-  const specs = ev2Specs(v, uniekModellen, maat);
-  r.ev2_wltp_km = specs ? `${specs.km} km` : "";
-  r.ev2_verbruik = specs ? `${kommagetal(specs.verbruik)} kWh/100 km` : "";
-  r.ev2_acceleratie = specs ? `${kommagetal(specs.acc)} s` : "";
-
-  if (configs.length === 0) {
-    r.ev2_model = "? (prijs past niet bij prijslijst)";
-    r.ev2_opties = "";
-    r.ev2_kleur = "";
-    return;
-  }
-  const uniek = a => [...new Set(a)];
-  r.ev2_model = uniek(configs.map(c => c.model)).join(" / ");
-  r.ev2_opties = configs.length === 1
-    ? ev2OptiesTekst(configs[0])
-    : configs.map(c => `${c.model}: ${ev2OptiesTekst(c)}`).join(" | ");
-  r.ev2_kleur = uniek(configs.flatMap(c => ev2KleurNamen(c, r.eerste_kleur))).join(" / ");
-}
-
-function ev2Filter(r) {
-  const zit = document.getElementById("ev2_zitplaatsen").value;
-  const bat = document.getElementById("ev2_batterij").value;
-  const model = document.getElementById("ev2_model").value;
-  const velgen = document.getElementById("ev2_velgen_filter").value;
-  const v = EV2.varianten[r.variant];
-
-  if (zit && (!v || String(v.zitplaatsen) !== zit)) return false;
-  if (bat && (!v || v.batterij !== Number(bat))) return false;
-  if (velgen && r.ev2_velgen !== `${velgen} inch`) return false;
-  if (model && !r._ev2configs.some(c => c.model === model)) return false;
-  return true;
-}
-
-function updateEv2Zichtbaarheid() {
-  document.getElementById("ev2Filters").hidden = !ev2Actief();
-}
-document.getElementById("handelsbenaming").addEventListener("input", updateEv2Zichtbaarheid);
-
-// ---------------------------------------------------------------------------
-
-const statusEl = document.getElementById("status");
-const resultaatEl = document.getElementById("resultaat");
-
-function setStatus(tekst, isFout = false) {
-  statusEl.textContent = tekst;
-  statusEl.className = isFout ? "fout" : "";
-}
-
-function maakTabel(rijen, kolommen) {
-  const table = document.createElement("table");
-  const thead = table.createTHead().insertRow();
-  kolommen.forEach(k => {
-    const th = document.createElement("th");
-    th.textContent = k;
-    if (k.startsWith("ev2_")) th.className = "ev2";
-    thead.appendChild(th);
-  });
-  const tbody = table.createTBody();
-  rijen.forEach(rij => {
-    const tr = tbody.insertRow();
-    kolommen.forEach(k => {
-      const td = tr.insertCell();
-      td.textContent = rij[k] ?? "";
-      if (k.startsWith("ev2_")) td.className = "ev2";
-    });
-  });
-  return table;
-}
-
-// Socrata laat lege velden vaak helemaal weg, dus "gevuld" = aanwezig en niet leeg.
-const gevuld = v => v !== undefined && v !== null && String(v).trim() !== "";
-
-// Staat het kenteken al op naam? Zoals in het Python-script: zodra een van de
-// tenaamstellings-/afgiftedatums gevuld is, is het voertuig al op naam gezet.
-// De BPM-datum (registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt) wordt
-// bewust NIET gebruikt: die is ook gevuld bij voertuigen die al op naam staan.
-const opNaam = r =>
-  gevuld(r.datum_eerste_afgifte_nederland) ||
-  gevuld(r.datum_eerste_tenaamstelling_in_nederland) ||
-  gevuld(r.datum_tenaamstelling);
-
-// Elke zoekopdracht krijgt een nummer. Antwoorden van een oudere zoekopdracht (bijv. door
-// dubbel klikken, of zoek=1 in de URL plus een klik) worden genegeerd, anders verschijnt
-// de tabel meerdere keren.
-let zoekTeller = 0;
-
-async function zoek() {
-  const mijnId = ++zoekTeller;
-  const verouderd = () => mijnId !== zoekTeller;
-  resultaatEl.replaceChildren();
-  const handelsbenaming = document.getElementById("handelsbenaming").value.trim();
-  const variant = document.getElementById("variant").value.trim();
-  const kleur = document.getElementById("kleur").value.trim().toUpperCase();
-  const prijs = document.getElementById("prijs").value.trim();
-  const massa_rijklaar = document.getElementById("massa_rijklaar").value.trim();
-  const zonderTenaamstelling = document.getElementById("zonderTenaamstelling").checked;
-  // Kenteken: streepjes, spaties en hoofdletters maken niet uit (de RDW bewaart ze zonder streepjes)
-  const kenteken = document.getElementById("kenteken").value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  const ev2 = ev2Actief();
-
-  if (!handelsbenaming && !kenteken) {
-    setStatus("Vul een handelsbenaming of een kenteken in.", true);
-    return;
-  }
-
-  // Veilig quoten van de waarde voor de SoQL-query
-  const quote = s => s.replace(/'/g, "''");
-
-  // Zoekvoorwaarden: handelsbenaming en/of kenteken (kenteken is alfanumeriek, dus veilig)
-  const voorwaarden = [];
-  // Handelsbenaming gevuld: query op handelsbenaming en daarna lokaal filteren (ook op kenteken).
-  // Alleen kenteken (handelsbenaming leeg): query op kenteken. In beide gevallen worden daarna
-  // alle ingevulde filters lokaal toegepast.
-  if (handelsbenaming) voorwaarden.push(`handelsbenaming = '${quote(handelsbenaming)}'`);
-  else voorwaarden.push(`upper(kenteken) like '%${kenteken}%'`);
-  const where = voorwaarden.join(" AND ");
-
-  const params = new URLSearchParams({
-    "$select": "*",
-    "$where": where,
-    "$order": ":id ASC",
-    "$limit": "50000",
-    "$offset": "0",
-    "$$read_from_nbe": "true",
-    "$$version": "2.1",
-  });
-
-  setStatus("Gegevens worden opgehaald bij de RDW... Even geduld.");
-
-  let data;
-  try {
-    const response = await fetch(`${URL_RDW}?${params}`);
-    if (verouderd()) return;
-    if (!response.ok) {
-      const tekst = await response.text();
-      setStatus(`Server fout ${response.status}: ${tekst.slice(0, 300)}`, true);
-      return;
+    function ev2KleurNamen(c, eersteKleur)
+    {
+      const k = (eersteKleur || "").toUpperCase();
+      const gratisTrim = c.model === "GT-Line" || c.model === "Black-Line";
+      // Kleuren die op deze uitvoering leverbaar zijn en bij de RDW-kleur passen
+      let namen = EV2.kleuren.filter(x => x.rdw.includes(k) && !(x.niet || []).includes(c.model));
+      let label;
+      if (c.mat) {
+        // Matte lak (meerprijs) is altijd Matte Ivory Silver, bij de RDW GRIJS
+        label = "mat";
+        namen = namen.filter(x => x.type === "mat");
+      } else {
+        namen = namen.filter(x => x.type !== "mat");
+        if (!gratisTrim) {
+          // Prijs bepaalt: Casa White (gratis) of metallic (meerprijs)
+          label = c.kleur ? "metallic" : "basis";
+          namen = namen.filter(x => x.type === label);
+        }
+        // GT-Line/Black-Line: alle gewone kleuren zijn gratis, dus de prijs zegt niets over de kleur
+      }
+      return namen.length
+        ? namen.map(x => x.naam)
+        : [`onbekend (${label ? label + ", " : ""}${c.model}, RDW: ${k || "leeg"})`];
     }
-    data = await response.json();
-    if (verouderd()) return;
-  } catch (e) {
-    if (verouderd()) return;
-    setStatus(`Netwerkfout of ongeldige JSON: ${e.message}`, true);
-    return;
-  }
 
-  if (!Array.isArray(data) || data.length === 0) {
-    const wat = handelsbenaming ? `handelsbenaming '${handelsbenaming}'` : `kenteken '${kenteken}'`;
-    setStatus(`De RDW gaf een lege lijst terug voor ${wat}.`);
-    return;
-  }
+    // Voeg afgeleide EV2-velden toe aan een RDW-rij.
+    function verrijkEv2(r)
+    {
+      const v = EV2.varianten[r.variant];
+      let configs = ev2Configuraties(r);
+      r.ev2_batterij = v ? kwhTekst(v.batterij) : "?";
+      r.ev2_zitplaatsen = v ? `${v.zitplaatsen}-zits` : "?";
 
-  // Voor elke EV2 in de resultaten (ook bij zoeken op kenteken): model, batterij,
-  // zitplaatsen, opties en kleurnamen afleiden
-  const isEv2 = r => (r.handelsbenaming || "").toUpperCase() === "EV2";
-  data.forEach(r => { if (isEv2(r)) verrijkEv2(r); });
+      // Velgmaat uit het gewicht; die moet bij de uitvoering passen
+      const maat = ev2Velgmaat(r);
+      r.ev2_velgen = maat ? `${maat} inch` : "?";
+      if (maat) {
+        const passend = configs.filter(c => EV2.velgen[c.model] === maat);
+        if (passend.length > 0) configs = passend;
+        else if (configs.length > 0) r.ev2_velgen += " (wijkt af van uitvoering)";
+      }
+      // Alleen configuraties houden waarvan de kleur bij de RDW-kleur past (als er dan nog iets overblijft)
+      const kleurPast = c => !ev2KleurNamen(c, r.eerste_kleur)[0].startsWith("onbekend");
+      const kleurOk = configs.filter(kleurPast);
+      if (kleurOk.length > 0) configs = kleurOk;
+      r._ev2configs = configs;
 
-  // Alle filters als lijst, zodat bij 0 resultaten te zien is welk filter de voertuigen weghaalt
-  const filters = [
-    { naam: `kenteken bevat '${kenteken}'`, actief: !!kenteken,
-      test: r => (r.kenteken || "").toUpperCase().includes(kenteken) },
-    { naam: `variant = ${variant}`, actief: !!variant, test: r => r.variant === variant },
-    { naam: `eerste kleur = ${kleur}`, actief: !!kleur,
-      test: r => (r.eerste_kleur || "").toUpperCase() === kleur },
-    { naam: `prijs = ${prijs}`, actief: !!prijs, test: r => r.catalogusprijs === prijs },
-    { naam: "alleen zonder tenaamstelling", actief: zonderTenaamstelling, test: r => !opNaam(r) },
-    { naam: `massa rijklaar = ${massa_rijklaar}`, actief: !!massa_rijklaar,
-      test: r => r.massa_rijklaar == massa_rijklaar },
-    { naam: "EV2-keuzelijsten (zitplaatsen/batterij/velgen/uitvoering)", actief: ev2, test: ev2Filter },
-  ].filter(f => f.actief);
+      const uniekModellen = [...new Set(configs.map(c => c.model))];
+      const specs = ev2Specs(v, uniekModellen, maat);
+      r.ev2_wltp_km = specs ? `${specs.km} km` : "";
+      r.ev2_verbruik = specs ? `${kommagetal(specs.verbruik)} kWh/100 km` : "";
+      r.ev2_acceleratie = specs ? `${kommagetal(specs.acc)} s` : "";
 
-  const gefilterd = data.filter(r => filters.every(f => f.test(r)));
-
-  // Kolommen voor een lijst voertuigen (EV2-kolommen direct na het kenteken)
-  const kolommenVoor = rijen => {
-    const kol = KOLOMMEN.filter(k => rijen.some(r => k in r));
-    if (rijen.some(isEv2)) kol.splice(kol.indexOf("kenteken") + 1, 0, ...EV2_KOLOMMEN);
-    return kol;
-  };
-
-  if (gefilterd.length === 0) {
-    setStatus(`Geen resultaten: de RDW gaf ${data.length} voertuig(en), maar die voldoen niet aan alle ingevulde filters.`);
-    const uitleg = document.createElement("div");
-    const kop = document.createElement("p");
-    kop.textContent = "Zoveel voertuigen laat elk filter afzonderlijk door (leeg laten = niet filteren, vink 'Alleen zonder tenaamstelling' uit als je alles wilt zien):";
-    const ul = document.createElement("ul");
-    filters.forEach(f => {
-      const li = document.createElement("li");
-      li.textContent = `${f.naam}: ${data.filter(f.test).length} van ${data.length}`;
-      ul.appendChild(li);
-    });
-    uitleg.append(kop, ul);
-    resultaatEl.appendChild(uitleg);
-
-    if (data.length <= 25) {
-      // Weinig voertuigen: toon ze toch, zodat je ziet wat er gevonden is
-      const p = document.createElement("p");
-      p.textContent = "Gevonden voertuigen (zonder filters):";
-      data.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
-      resultaatEl.append(p, maakTabel(data, kolommenVoor(data)));
-    } else {
-      const kleuren = [...new Set(data.map(r => r.eerste_kleur))].sort();
-      const p = document.createElement("p");
-      p.textContent = "Unieke kleuren in de gevonden voertuigen:";
-      const pre = document.createElement("pre");
-      pre.textContent = kleuren.join(", ");
-      resultaatEl.append(p, pre);
+      if (configs.length === 0) {
+        r.ev2_model = "? (prijs past niet bij prijslijst)";
+        r.ev2_opties = "";
+        r.ev2_kleur = "";
+        return;
+      }
+      const uniek = a => [...new Set(a)];
+      r.ev2_model = uniek(configs.map(c => c.model)).join(" / ");
+      r.ev2_opties = configs.length === 1
+        ? ev2OptiesTekst(configs[0])
+        : configs.map(c => `${c.model}: ${ev2OptiesTekst(c)}`).join(" | ");
+      r.ev2_kleur = uniek(configs.flatMap(c => ev2KleurNamen(c, r.eerste_kleur))).join(" / ");
     }
-    return;
-  }
 
-  gefilterd.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
+    function ev2Filter(r)
+    {
+      const zit = document.getElementById("ev2_zitplaatsen").value;
+      const bat = document.getElementById("ev2_batterij").value;
+      const model = document.getElementById("ev2_model").value;
+      const velgen = document.getElementById("ev2_velgen_filter").value;
+      const v = EV2.varianten[r.variant];
 
-  const sleutel = "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt";
-  gefilterd.sort((a, b) => (b[sleutel] || "").localeCompare(a[sleutel] || ""));
-
-  setStatus(`Succes! ${gefilterd.length} voertuigen gevonden (van ${data.length} totaal).`);
-  resultaatEl.replaceChildren(maakTabel(gefilterd, kolommenVoor(gefilterd)));
-}
-
-document.getElementById("zoek").addEventListener("click", zoek);
-
-// --- URL-parameters: overrulen de defaults van alle invoervelden ---
-// Voorbeeld: ?kenteken=AB123C&handelsbenaming=&zonderTenaamstelling=0&variant=&kleur=&prijs=&massa_rijklaar=&zoek=1
-// Voorbeeld: ?variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=0&zoek=1
-// EV2-extra: &ev2_zitplaatsen=5&ev2_batterij=61&ev2_model=Plus&ev2_velgen_filter=18
-// Parameternaam = id van het invoerveld (hoofdletterongevoelig).
-// Lege waarde (bv. ?prijs=) = veld leegmaken = niet filteren.
-// zoek=1 start direct de zoekopdracht.
-const JA = ["1", "true", "ja", "on", "yes", ""];
-
-function toepassenUrlParameters() {
-  const params = new URLSearchParams(location.search);
-  if ([...params.keys()].length === 0) return;
-
-  const waarden = new Map([...params].map(([k, v]) => [k.toLowerCase(), v]));
-
-  document.querySelectorAll("input[id], select[id], textarea[id]").forEach(el => {
-    const sleutel = el.id.toLowerCase();
-    if (!waarden.has(sleutel)) return;
-    const waarde = waarden.get(sleutel);
-    if (el.type === "checkbox") {
-      el.checked = JA.includes(waarde.toLowerCase());
-    } else if (el.tagName === "SELECT") {
-      // Selecteer de optie die overeenkomt (hoofdletterongevoelig op value of tekst)
-      const opt = [...el.options].find(o =>
-        o.value.toLowerCase() === waarde.toLowerCase() ||
-        o.text.toLowerCase() === waarde.toLowerCase());
-      el.value = opt ? opt.value : "";
-    } else {
-      el.value = waarde;
-    }
-  });
-
-  updateEv2Zichtbaarheid();
-
-  if (waarden.has("zoek") && JA.includes(waarden.get("zoek").toLowerCase())) {
-    zoek();
-  }
-}
-
-// --- Kopieer link: huidige filterwaarden als URL, incl. zoek=1 ---
-// Werkt voor zowel https://... als file:///... (location.origin is bij file: "null",
-// dus de basis-URL komt uit location.href zonder query en hash).
-function maakLink() {
-  const params = new URLSearchParams();
-  document.querySelectorAll("input[id], select[id]").forEach(el => {
-    // EV2-velden alleen meenemen als ze van toepassing zijn
-    if (el.id.startsWith("ev2_") && !ev2Actief()) return;
-    params.set(el.id, el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value.trim());
-  });
-  params.set("zoek", "1");
-  const basis = location.href.split(/[?#]/)[0];
-  return `${basis}?${params}`;
-}
-
-// Klembord: moderne API alleen in een secure context (https); bij file: valt het
-// terug op de oude execCommand-methode.
-async function kopieerNaarKlembord(tekst) {
-  if (navigator.clipboard && window.isSecureContext) {
-    try {
-      await navigator.clipboard.writeText(tekst);
+      if (zit && (!v || String(v.zitplaatsen) !== zit)) return false;
+      if (bat && (!v || v.batterij !== Number(bat))) return false;
+      if (velgen && r.ev2_velgen !== `${velgen} inch`) return false;
+      if (model && !r._ev2configs.some(c => c.model === model)) return false;
       return true;
-    } catch (e) { /* val terug op execCommand */ }
-  }
-  const ta = document.createElement("textarea");
-  ta.value = tekst;
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  document.body.appendChild(ta);
-  ta.select();
-  let ok = false;
-  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-  ta.remove();
-  return ok;
-}
+    }
 
-document.getElementById("kopieerLink").addEventListener("click", async () => {
-  const link = maakLink();
-  if (await kopieerNaarKlembord(link)) {
-    setStatus("Link gekopieerd naar het klembord.");
-  } else {
-    setStatus(`Kopiëren niet gelukt, kopieer zelf: ${link}`, true);
-  }
-});
+    function updateEv2Zichtbaarheid()
+    {
+      document.getElementById("ev2Filters").hidden = !ev2Actief();
+    }
+    document.getElementById("handelsbenaming").addEventListener("input", updateEv2Zichtbaarheid);
 
-updateEv2Zichtbaarheid();
-toepassenUrlParameters();
-</script>
+    // ---------------------------------------------------------------------------
+
+    const statusEl = document.getElementById("status");
+    const resultaatEl = document.getElementById("resultaat");
+
+    function setStatus(tekst, isFout = false)
+    {
+      statusEl.textContent = tekst;
+      statusEl.className = isFout ? "fout" : "";
+    }
+
+    function maakTabel(rijen, kolommen)
+    {
+      const table = document.createElement("table");
+      const thead = table.createTHead().insertRow();
+      kolommen.forEach(k =>
+      {
+        const th = document.createElement("th");
+        th.textContent = k;
+        if (k.startsWith("ev2_")) th.className = "ev2";
+        thead.appendChild(th);
+      });
+      const tbody = table.createTBody();
+      rijen.forEach(rij =>
+      {
+        const tr = tbody.insertRow();
+        kolommen.forEach(k =>
+        {
+          const td = tr.insertCell();
+          td.textContent = rij[k] ?? "";
+          if (k.startsWith("ev2_")) td.className = "ev2";
+        });
+      });
+      return table;
+    }
+
+    // Socrata laat lege velden vaak helemaal weg, dus "gevuld" = aanwezig en niet leeg.
+    const gevuld = v => v !== undefined && v !== null && String(v).trim() !== "";
+
+    // Staat het kenteken al op naam? Zoals in het Python-script: zodra een van de
+    // tenaamstellings-/afgiftedatums gevuld is, is het voertuig al op naam gezet.
+    // De BPM-datum (registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt) wordt
+    // bewust NIET gebruikt: die is ook gevuld bij voertuigen die al op naam staan.
+    const opNaam = r =>
+      gevuld(r.datum_eerste_afgifte_nederland) ||
+      gevuld(r.datum_eerste_tenaamstelling_in_nederland) ||
+      gevuld(r.datum_tenaamstelling);
+
+    // Elke zoekopdracht krijgt een nummer. Antwoorden van een oudere zoekopdracht (bijv. door
+    // dubbel klikken, of zoek=1 in de URL plus een klik) worden genegeerd, anders verschijnt
+    // de tabel meerdere keren.
+    let zoekTeller = 0;
+
+    async function zoek()
+    {
+      const mijnId = ++zoekTeller;
+      const verouderd = () => mijnId !== zoekTeller;
+      resultaatEl.replaceChildren();
+      const handelsbenaming = document.getElementById("handelsbenaming").value.trim();
+      const variant = document.getElementById("variant").value.trim();
+      const kleur = document.getElementById("kleur").value.trim().toUpperCase();
+      const prijs = document.getElementById("prijs").value.trim();
+      const massa_rijklaar = document.getElementById("massa_rijklaar").value.trim();
+      const zonderTenaamstelling = document.getElementById("zonderTenaamstelling").checked;
+      // Kenteken: streepjes, spaties en hoofdletters maken niet uit (de RDW bewaart ze zonder streepjes)
+      const kenteken = document.getElementById("kenteken").value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+      const ev2 = ev2Actief();
+
+      if (!handelsbenaming && !kenteken) {
+        setStatus("Vul een handelsbenaming of een kenteken in.", true);
+        return;
+      }
+
+      // Veilig quoten van de waarde voor de SoQL-query
+      const quote = s => s.replace(/'/g, "''");
+
+      // Zoekvoorwaarden: handelsbenaming en/of kenteken (kenteken is alfanumeriek, dus veilig)
+      const voorwaarden = [];
+      // Handelsbenaming gevuld: query op handelsbenaming en daarna lokaal filteren (ook op kenteken).
+      // Alleen kenteken (handelsbenaming leeg): query op kenteken. In beide gevallen worden daarna
+      // alle ingevulde filters lokaal toegepast.
+      if (handelsbenaming) voorwaarden.push(`handelsbenaming = '${quote(handelsbenaming)}'`);
+      else voorwaarden.push(`upper(kenteken) like '%${kenteken}%'`);
+      const where = voorwaarden.join(" AND ");
+
+      const params = new URLSearchParams({
+        "$select": "*",
+        "$where": where,
+        "$order": ":id ASC",
+        "$limit": "500000",
+        "$offset": "0",
+        "$$read_from_nbe": "true",
+        "$$version": "2.1",
+      });
+
+      setStatus("Gegevens worden opgehaald bij de RDW... Even geduld.");
+
+      let data;
+      try {
+        const response = await fetch(`${URL_RDW}?${params}`);
+        if (verouderd()) return;
+        if (!response.ok) {
+          const tekst = await response.text();
+          setStatus(`Server fout ${response.status}: ${tekst.slice(0, 300)}`, true);
+          return;
+        }
+        data = await response.json();
+        if (verouderd()) return;
+      } catch (e) {
+        if (verouderd()) return;
+        setStatus(`Netwerkfout of ongeldige JSON: ${e.message}`, true);
+        return;
+      }
+
+      if (!Array.isArray(data) || data.length === 0) {
+        const wat = handelsbenaming ? `handelsbenaming '${handelsbenaming}'` : `kenteken '${kenteken}'`;
+        setStatus(`De RDW gaf een lege lijst terug voor ${wat}.`);
+        return;
+      }
+
+      // Voor elke EV2 in de resultaten (ook bij zoeken op kenteken): model, batterij,
+      // zitplaatsen, opties en kleurnamen afleiden
+      const isEv2 = r => (r.handelsbenaming || "").toUpperCase() === "EV2";
+      data.forEach(r => { if (isEv2(r)) verrijkEv2(r); });
+
+      // Alle filters als lijst, zodat bij 0 resultaten te zien is welk filter de voertuigen weghaalt
+      const filters = [
+        {
+          naam: `kenteken bevat '${kenteken}'`, actief: !!kenteken,
+          test: r => (r.kenteken || "").toUpperCase().includes(kenteken)
+        },
+        { naam: `variant = ${variant}`, actief: !!variant, test: r => r.variant === variant },
+        {
+          naam: `eerste kleur = ${kleur}`, actief: !!kleur,
+          test: r => (r.eerste_kleur || "").toUpperCase() === kleur
+        },
+        { naam: `prijs = ${prijs}`, actief: !!prijs, test: r => r.catalogusprijs === prijs },
+        { naam: "alleen zonder tenaamstelling", actief: zonderTenaamstelling, test: r => !opNaam(r) },
+        {
+          naam: `massa rijklaar = ${massa_rijklaar}`, actief: !!massa_rijklaar,
+          test: r => r.massa_rijklaar == massa_rijklaar
+        },
+        { naam: "EV2-keuzelijsten (zitplaatsen/batterij/velgen/uitvoering)", actief: ev2, test: ev2Filter },
+      ].filter(f => f.actief);
+
+      const gefilterd = data.filter(r => filters.every(f => f.test(r)));
+
+      // Kolommen voor een lijst voertuigen (EV2-kolommen direct na het kenteken)
+      const kolommenVoor = rijen =>
+      {
+        const kol = KOLOMMEN.filter(k => rijen.some(r => k in r));
+        if (rijen.some(isEv2)) kol.splice(kol.indexOf("kenteken") + 1, 0, ...EV2_KOLOMMEN);
+        return kol;
+      };
+
+      if (gefilterd.length === 0) {
+        setStatus(`Geen resultaten: de RDW gaf ${data.length} voertuig(en), maar die voldoen niet aan alle ingevulde filters.`);
+        const uitleg = document.createElement("div");
+        const kop = document.createElement("p");
+        kop.textContent = "Zoveel voertuigen laat elk filter afzonderlijk door (leeg laten = niet filteren, vink 'Alleen zonder tenaamstelling' uit als je alles wilt zien):";
+        const ul = document.createElement("ul");
+        filters.forEach(f =>
+        {
+          const li = document.createElement("li");
+          li.textContent = `${f.naam}: ${data.filter(f.test).length} van ${data.length}`;
+          ul.appendChild(li);
+        });
+        uitleg.append(kop, ul);
+        resultaatEl.appendChild(uitleg);
+
+        if (data.length <= 25) {
+          // Weinig voertuigen: toon ze toch, zodat je ziet wat er gevonden is
+          const p = document.createElement("p");
+          p.textContent = "Gevonden voertuigen (zonder filters):";
+          data.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
+          resultaatEl.append(p, maakTabel(data, kolommenVoor(data)));
+        } else {
+          const kleuren = [...new Set(data.map(r => r.eerste_kleur))].sort();
+          const p = document.createElement("p");
+          p.textContent = "Unieke kleuren in de gevonden voertuigen:";
+          const pre = document.createElement("pre");
+          pre.textContent = kleuren.join(", ");
+          resultaatEl.append(p, pre);
+        }
+        return;
+      }
+
+      gefilterd.forEach(r => { if (r.kenteken) r.kenteken = r.kenteken.toUpperCase(); });
+
+      const sleutel = "registratie_datum_goedkeuring_afschrijvingsmoment_bpm_dt";
+      gefilterd.sort((a, b) => (b[sleutel] || "").localeCompare(a[sleutel] || ""));
+
+      setStatus(`Succes! ${gefilterd.length} voertuigen gevonden (van ${data.length} totaal).`);
+      resultaatEl.replaceChildren(maakTabel(gefilterd, kolommenVoor(gefilterd)));
+    }
+
+    document.getElementById("zoek").addEventListener("click", zoek);
+
+    // --- URL-parameters: overrulen de defaults van alle invoervelden ---
+    // Voorbeeld: ?kenteken=AB123C&handelsbenaming=&zonderTenaamstelling=0&variant=&kleur=&prijs=&massa_rijklaar=&zoek=1
+    // Voorbeeld: ?variant=F5E22&kleur=GROEN&prijs=35440&massa_rijklaar=1650&zonderTenaamstelling=0&zoek=1
+    // EV2-extra: &ev2_zitplaatsen=5&ev2_batterij=61&ev2_model=Plus&ev2_velgen_filter=18
+    // Parameternaam = id van het invoerveld (hoofdletterongevoelig).
+    // Lege waarde (bv. ?prijs=) = veld leegmaken = niet filteren.
+    // zoek=1 start direct de zoekopdracht.
+    const JA = ["1", "true", "ja", "on", "yes", ""];
+
+    function toepassenUrlParameters()
+    {
+      const params = new URLSearchParams(location.search);
+      if ([...params.keys()].length === 0) return;
+
+      const waarden = new Map([...params].map(([k, v]) => [k.toLowerCase(), v]));
+
+      document.querySelectorAll("input[id], select[id], textarea[id]").forEach(el =>
+      {
+        const sleutel = el.id.toLowerCase();
+        if (!waarden.has(sleutel)) return;
+        const waarde = waarden.get(sleutel);
+        if (el.type === "checkbox") {
+          el.checked = JA.includes(waarde.toLowerCase());
+        } else if (el.tagName === "SELECT") {
+          // Selecteer de optie die overeenkomt (hoofdletterongevoelig op value of tekst)
+          const opt = [...el.options].find(o =>
+            o.value.toLowerCase() === waarde.toLowerCase() ||
+            o.text.toLowerCase() === waarde.toLowerCase());
+          el.value = opt ? opt.value : "";
+        } else {
+          el.value = waarde;
+        }
+      });
+
+      updateEv2Zichtbaarheid();
+
+      if (waarden.has("zoek") && JA.includes(waarden.get("zoek").toLowerCase())) {
+        zoek();
+      }
+    }
+
+    // --- Kopieer link: huidige filterwaarden als URL, incl. zoek=1 ---
+    // Werkt voor zowel https://... als file:///... (location.origin is bij file: "null",
+    // dus de basis-URL komt uit location.href zonder query en hash).
+    function maakLink()
+    {
+      const params = new URLSearchParams();
+      document.querySelectorAll("input[id], select[id]").forEach(el =>
+      {
+        // EV2-velden alleen meenemen als ze van toepassing zijn
+        if (el.id.startsWith("ev2_") && !ev2Actief()) return;
+        params.set(el.id, el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value.trim());
+      });
+      params.set("zoek", "1");
+      const basis = location.href.split(/[?#]/)[0];
+      return `${basis}?${params}`;
+    }
+
+    // Klembord: moderne API alleen in een secure context (https); bij file: valt het
+    // terug op de oude execCommand-methode.
+    async function kopieerNaarKlembord(tekst)
+    {
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(tekst);
+          return true;
+        } catch (e) { /* val terug op execCommand */ }
+      }
+      const ta = document.createElement("textarea");
+      ta.value = tekst;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+
+    document.getElementById("kopieerLink").addEventListener("click", async () =>
+    {
+      const link = maakLink();
+      if (await kopieerNaarKlembord(link)) {
+        setStatus("Link gekopieerd naar het klembord.");
+      } else {
+        setStatus(`Kopiëren niet gelukt, kopieer zelf: ${link}`, true);
+      }
+    });
+
+    updateEv2Zichtbaarheid();
+    toepassenUrlParameters();
+  </script>
 </body>
+
 </html>
